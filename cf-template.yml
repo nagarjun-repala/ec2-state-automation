@@ -1,0 +1,289 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Timeout: 40
+
+
+Parameters:
+  StartInstancesCronExpression:
+    Description: Start Instances Scheduled Event Name
+    Type: String
+    Default: cron(0 8 ? * 2-6 *)
+    # Default: cron(52 1 ? * 2-6 *)
+  StopTerminateInstancesCronExpression:
+    Description: Stop / Terminate Instances Scheduled Event Name
+    Type: String
+    # Default: cron(0 17 ? * 2-6 *)
+    Default: cron(0 17 ? * 2-6 *)
+
+  TagKey:
+    Description: TagKey
+    Type: String
+    Default: dName   
+
+  TagValue:
+    Description: Tag value
+    Type: String
+    Default: HelloWorld       
+
+Resources:
+  StartLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+      Policies:
+        - PolicyName: DescribeImages
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action: 
+                  - ec2:Start*
+                  - ec2:Describe*              
+                Effect: Allow
+                Resource: "*"                
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                  - logs:GetLogEvents
+                Resource: arn:aws:logs:*:*:*
+                Effect: Allow     
+
+  StartLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: Scheduled_Start_Instances_Lamdba_function
+      Description: Generates a report on all the available volumes and metrics for all used volumes and emails it to the specified people.
+      InlineCode: |
+        import json,os
+        import boto3
+        import logging
+
+        TagKey = os.environ.get('TAGKEY')
+        TagValues = [os.environ.get('TAGVALUE')]
+
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+
+        # Function Handler to initiate the process of checking the ec2 instances and acting based on the Tags
+        def start_instances(event, context):
+            
+            
+            instances_with_tag = get_ec2_instances_with_tags()
+
+            ec2 = boto3.resource('ec2')
+
+            ec2.instances.filter(InstanceIds=instances_with_tag).start()
+
+        #This method gets the list of ec2 instances with the specified tag key
+        def get_ec2_instances_with_tags():
+            
+            client = boto3.client('ec2')
+
+            custom_filter = [{
+                    'Name':"tag:{}".format(TagKey), 
+                    'Values': TagValues},
+                    {'Name': 'instance-state-name', 'Values': ['stopped']}
+                    ]
+                
+            instance_ids = []
+            try: 
+            
+                instances_with_tag = client.describe_instances(Filters=custom_filter)
+                
+                if not instances_with_tag.get("Reservations"):
+                    return instance_ids
+                    
+                for reservation in instances_with_tag['Reservations']:
+                  for instance in reservation['Instances']:
+                    
+                    instance_ids.append(instance.get('InstanceId'))
+
+            except Exception as e:
+                
+                logger.error("Exception : {} , occured while getting ec2 instances with tags".format(e))
+            
+            return instance_ids
+
+        def get_ec2_instances_without_tags():
+
+            client = boto3.client('ec2')    
+            all_instances = []
+            try: 
+            
+                instances_with_tag = client.describe_instances()
+
+                if not instances_with_tag.get("Reservations"):
+                    return all_instances
+                
+                for reservation in instances_with_tag['Reservations']:
+                  for instance in reservation['Instances']:
+                    all_instances.append(instance.get('InstanceId'))
+                    
+
+            except Exception as e:
+                
+                logger.error("Exception : {} , occured while getting ec2 instances with tags".format(e))
+            
+            return list(set(all_instances) - set(get_ec2_instances_with_tags()))
+            
+      PackageType: Zip
+      Handler: index.start_instances
+      Runtime: python3.9
+      Role: !GetAtt StartLambdaRole.Arn
+      Environment:
+        Variables:
+          TAGKEY : !Ref TagKey
+          TAGVALUE : !Ref TagValue
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Enabled: true
+            Name: StartEC2InstancesScheduledEvent
+            Description: This is a scheduled event, trigers the trusted advisor reporting lambda
+            Schedule: !Ref StartInstancesCronExpression
+
+  StopTerminateLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+      Policies:
+        - PolicyName: DescribeImages
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action: 
+                  - ec2:Stop*
+                  - ec2:Terminate*
+                  - ec2:Describe*
+                Effect: Allow
+                Resource: "*"                
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                  - logs:GetLogEvents
+                Resource: arn:aws:logs:*:*:*
+                Effect: Allow     
+
+  StopTerminateLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: Scheduled_Stop_Terminate_Instances_Lamdba_function
+      Description: Generates a report on all the available volumes and metrics for all used volumes and emails it to the specified people.
+      PackageType: Zip
+      InlineCode: |
+        import json,os
+        import boto3
+        import logging
+
+        TagKey = os.environ.get('TAGKEY')
+        TagValues = [os.environ.get('TAGVALUE')]
+
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+
+        # Function Handler to initiate the process of checking the ec2 instances and acting based on the Tags
+        def stop_terminate_instances(event, context):
+            
+            
+            instances_with_tag = get_ec2_instances_with_tags()
+
+            instances_without_tag = get_ec2_instances_without_tags()
+
+            ec2 = boto3.resource('ec2')
+
+            ec2.instances.filter(InstanceIds=instances_with_tag).stop()
+
+
+            # Terminate untagged instances
+            ec2.instances.filter(InstanceIds=instances_without_tag).terminate()
+
+
+        #This method gets the list of ec2 instances with the specified tag key
+        def get_ec2_instances_with_tags():
+            
+            client = boto3.client('ec2')
+
+            custom_filter = [{
+                    'Name':"tag:{}".format(TagKey), 
+                    'Values': TagValues},
+                    {'Name': 'instance-state-name', 'Values': ['running','stopped']}
+                    ]
+                
+            instance_ids = []
+            try: 
+            
+                instances_with_tag = client.describe_instances(Filters=custom_filter)
+                
+                if not instances_with_tag.get("Reservations"):
+                    return instance_ids
+                    
+                for reservation in instances_with_tag['Reservations']:
+                  for instance in reservation['Instances']:
+                    
+                    instance_ids.append(instance.get('InstanceId'))
+
+            except Exception as e:
+                
+                logger.error("Exception : {} , occured while getting ec2 instances with tags".format(e))
+            
+            return instance_ids
+
+        def get_ec2_instances_without_tags():
+
+            client = boto3.client('ec2')    
+            all_instances = []
+            try: 
+            
+                instances_with_tag = client.describe_instances()
+
+                if not instances_with_tag.get("Reservations"):
+                    return all_instances
+                
+                for reservation in instances_with_tag['Reservations']:
+                  for instance in reservation['Instances']:
+                    all_instances.append(instance.get('InstanceId'))
+                    
+
+            except Exception as e:
+                
+                logger.error("Exception : {} , occured while getting ec2 instances with tags".format(e))
+            
+            return list(set(all_instances) - set(get_ec2_instances_with_tags()))
+            
+      Handler: index.stop_terminate_instances
+      Runtime: python3.9
+      Role: !GetAtt StopTerminateLambdaRole.Arn
+      Environment:
+        Variables:
+          TAGKEY : !Ref TagKey
+          TAGVALUE : !Ref TagValue    
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Enabled: true
+            Name: StopTerminateEC2InstancesScheduledEvent
+            Description: This is a scheduled event, trigers the trusted advisor reporting lambda
+            Schedule: !Ref StopTerminateInstancesCronExpression
